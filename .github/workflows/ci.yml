@@ -1,0 +1,23 @@
+name: CI
+
+# The deployment artifacts that need no cluster and no cloud: the Helm chart (helm lint, helm template | kubeconform, the refusals)
+# and the templates (compose files valid, proxy copies identical to the tested ones, Kubernetes values render, cloud-init schema
+# and shellcheck). The tests that start a real Polysite (proxy, k3s, template stacks) are run by hand, see README.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Helm chart lint and schema checks
+        run: sh kubernetes/test/lint.sh
+      - name: Template checks
+        run: sh templates/test.sh static

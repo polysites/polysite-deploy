@@ -1,0 +1,93 @@
+{{- if .Values.postgresql.enabled }}
+{{- $name := include "polysite.dbHost" . }}
+{{- $labels := dict "ctx" . "component" "postgres" }}
+# A single unmanaged PostgreSQL for demos. Production: use a managed database (see values.yaml).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polysite.selectorLabels" $labels | nindent 8 }}
+    spec:
+      {{- include "polysite.imagePullSecrets" . | nindent 6 }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: postgres
+          image: {{ .Values.image.postgres | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          env:
+            - {name: POSTGRES_USER, value: {{ .Values.postgresql.user | quote }}}
+            - {name: POSTGRES_DB, value: {{ .Values.postgresql.database | quote }}}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "polysite.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          readinessProbe:
+            exec: {command: ["sh", "-c", "pg_isready -q -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: ["sh", "-c", "pg_isready -q -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]}
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+            - {name: run, mountPath: /var/run/postgresql}
+      volumes:
+        - {name: run, emptyDir: {}}
+      {{- with .Values.postgresql.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.postgresql.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if .Values.postgresql.persistence.storageClass }}
+        storageClassName: {{ .Values.postgresql.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}
+  selector:
+    {{- include "polysite.selectorLabels" $labels | nindent 4 }}
+{{- end }}

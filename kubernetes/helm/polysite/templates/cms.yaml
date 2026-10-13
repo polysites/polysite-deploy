@@ -1,0 +1,193 @@
+{{- $name := include "polysite.cmsHost" . }}
+{{- $labels := dict "ctx" . "component" "cms" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.cms.autoscaling.enabled }}
+  replicas: {{ .Values.cms.replicaCount }}
+  {{- end }}
+  {{- if .Values.cms.strategy }}
+  strategy:
+    {{- toYaml .Values.cms.strategy | nindent 4 }}
+  {{- else if has "ReadWriteOnce" .Values.media.persistence.accessModes }}
+  # A ReadWriteOnce volume can be mounted by one node at a time: a rolling update could leave the new pod waiting for the old one forever.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polysite.selectorLabels" $labels | nindent 8 }}
+        {{- with .Values.cms.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include "polysite.configData" . | sha256sum }}
+        {{- if not .Values.secrets.existingSecret }}
+        checksum/secret: {{ include "polysite.secretData" . | sha256sum }}
+        {{- end }}
+        {{- with .Values.cms.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "polysite.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "polysite.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.cms.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.cms.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.cms.podSecurityContext | nindent 8 }}
+      containers:
+        - name: cms
+          image: {{ include "polysite.image" (dict "ctx" . "img" .Values.image.cms) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.migrations.job.enabled }}
+          # The migration Job has already applied the migrations, so start the server directly (the image's own command runs
+          # `payload migrate` first). `next start` is called without npm so a read-only root file system is enough.
+          command: ["node", "node_modules/next/dist/bin/next", "start", "--port", "3001"]
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: {{ include "polysite.fullname" . }}
+            - secretRef:
+                name: {{ include "polysite.secretName" . }}
+            {{- with .Values.cms.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: polysite-cms
+            - name: HOME
+              value: /tmp
+            # The CMS sends REVALIDATE_SECRET to the web app after a publish; the web app is given the same value as NUXT_REVALIDATE_SECRET.
+            - name: NUXT_REVALIDATE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "polysite.secretName" . }}
+                  key: REVALIDATE_SECRET
+            {{- with .Values.cms.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            {{- toYaml .Values.cms.startupProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.cms.readinessProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.cms.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.cms.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.cms.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: media
+              mountPath: /repo/apps/cms/media
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /repo/apps/cms/.next/cache
+            {{- with .Values.cms.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: media
+          {{- if .Values.media.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-media" (include "polysite.fullname" .)) .Values.media.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}
+        {{- with .Values.cms.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.cms.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cms.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cms.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cms.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+  {{- with .Values.cms.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.cms.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.cms.service.port }}
+      targetPort: http
+  selector:
+    {{- include "polysite.selectorLabels" $labels | nindent 4 }}
+{{- if .Values.cms.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.cms.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" $labels | nindent 6 }}
+{{- end }}
+{{- if .Values.cms.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ .Values.cms.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.cms.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.cms.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

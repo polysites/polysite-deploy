@@ -1,0 +1,7 @@
+# Dependabot keeps the GitHub Actions in .github/workflows current. The Polysite versions pinned in this template are bumped by Renovate
+# (renovate.json): Dependabot cannot read a chart version or an image tag out of a values file.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: monthly}

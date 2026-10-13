@@ -1,0 +1,15 @@
+# A kustomize overlay that renders the chart with the values of this repository, plus the namespace. Needs `kustomize build --enable-helm`.
+# Not tested: kustomize's OCI chart support differs between versions; if yours cannot pull oci://, run `helm pull` once and use chartHome.
+#   kustomize build --enable-helm kustomize | kubectl apply -f -
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+helmCharts:
+  - name: polysite
+    repo: oci://ghcr.io/polysites/charts
+    # renovate: chart=ghcr.io/polysites/charts/polysite
+    version: 0.1.0
+    releaseName: polysite
+    namespace: polysite
+    valuesFile: ../values.yaml

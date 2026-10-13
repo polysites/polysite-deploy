@@ -1,0 +1,111 @@
+# Polysite behind Traefik: the same routing, limits and headers as the Caddyfile (file provider, no Docker socket needed).
+#
+# Edit three things:
+#   1. the two server URLs at the bottom (cms:3001 and web:3000 inside the stack's Docker network, or
+#      http://host.docker.internal:3001 / 127.0.0.1 when Traefik runs elsewhere);
+#   2. the hostnames in the rules: site.example.org (add `|| Host(...)` for each extra public site domain) and admin.example.org
+#      (SITE_DOMAIN and CMS_DOMAIN in .env);
+#   3. nothing else. Which site a request belongs to is decided by the app from the Host header.
+#
+# What the Caddyfile does that this file reproduces:
+#   /api/media/file/*   -> cms, API headers, Cache-Control public, max-age=86400
+#   /api/form-intake/*  -> cms, API headers, request body capped at 64 KB (chunked bodies too: the buffering middleware counts them)
+#   /api/*              -> cms, API headers, request body capped at 100 MB (Caddy's 100MB is 100,000,000 bytes)
+#   everything else     -> web (the Nuxt server also serves its own scripts, styles and fonts: no shared volume is needed)
+#   admin domain        -> cms, admin headers (adds X-Frame-Options DENY and frame-ancestors 'none'), "/" redirects to /admin
+# Traefik replaces any X-Forwarded-For the client sent with the address it saw (it trusts no one by default), which is what the
+# app reads (the last entry). If Traefik itself sits behind a load balancer, list that balancer under
+# entryPoints.<name>.forwardedHeaders.trustedIPs in the static file and check that login limits still see the visitor's address.
+
+http:
+  routers:
+    # Priorities: the narrowest rule wins, the catch-all for the site is last.
+    polysite-media:
+      rule: "(Host(`site.example.org`)) && PathPrefix(`/api/media/file/`)"
+      entryPoints: [websecure]
+      priority: 400
+      middlewares: [polysite-api-headers, polysite-media-cache, polysite-limit-100mb]
+      service: polysite-cms
+    polysite-form-intake:
+      rule: "(Host(`site.example.org`)) && PathPrefix(`/api/form-intake/`)"
+      entryPoints: [websecure]
+      priority: 300
+      middlewares: [polysite-api-headers, polysite-limit-64kb]
+      service: polysite-cms
+    polysite-api:
+      rule: "(Host(`site.example.org`)) && PathPrefix(`/api/`)"
+      entryPoints: [websecure]
+      priority: 200
+      middlewares: [polysite-api-headers, polysite-limit-100mb]
+      service: polysite-cms
+    polysite-web:
+      rule: "Host(`site.example.org`)"
+      entryPoints: [websecure]
+      priority: 100
+      service: polysite-web
+    # The bare root of the admin domain has no page of its own.
+    polysite-admin-root:
+      rule: "Host(`admin.example.org`) && Path(`/`)"
+      entryPoints: [websecure]
+      priority: 500
+      middlewares: [polysite-admin-headers, polysite-admin-root]
+      service: noop@internal
+    polysite-admin:
+      rule: "Host(`admin.example.org`)"
+      entryPoints: [websecure]
+      priority: 450
+      middlewares: [polysite-admin-headers, polysite-limit-100mb]
+      service: polysite-cms
+
+  middlewares:
+    polysite-api-headers:
+      headers:
+        customResponseHeaders:
+          X-Content-Type-Options: "nosniff"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+          # An empty value removes the header the app sent.
+          Server: ""
+    polysite-admin-headers:
+      headers:
+        customResponseHeaders:
+          X-Content-Type-Options: "nosniff"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+          X-Frame-Options: "DENY"
+          Content-Security-Policy: "frame-ancestors 'none'"
+          Server: ""
+    # Uploaded files never change under the same name, but the CMS sends no Cache-Control.
+    polysite-media-cache:
+      headers:
+        customResponseHeaders:
+          Cache-Control: "public, max-age=86400"
+    polysite-limit-64kb:
+      buffering:
+        maxRequestBodyBytes: 65536
+        memRequestBodyBytes: 65536
+    polysite-limit-100mb:
+      buffering:
+        maxRequestBodyBytes: 100000000
+        # Bigger bodies are spooled to disk (the container's /tmp) instead of held in memory.
+        memRequestBodyBytes: 2097152
+    polysite-admin-root:
+      redirectRegex:
+        regex: "^(https?)://([^/]+)/?$"
+        replacement: "${1}://${2}/admin"
+        permanent: false
+
+  services:
+    polysite-cms:
+      loadBalancer:
+        servers:
+          - url: "http://cms:3001"
+    polysite-web:
+      loadBalancer:
+        servers:
+          - url: "http://web:3000"
+
+tls:
+  options:
+    polysite:
+      minVersion: VersionTLS12

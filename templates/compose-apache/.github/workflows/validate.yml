@@ -1,0 +1,21 @@
+name: Validate
+
+# Only lints and validates; it deploys nothing and needs no secrets.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: The compose file is valid with the example environment
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          # every image is pinned to a version, never :latest
+          ! grep -E 'image:.*:latest' docker-compose.yml || { echo 'an image is not pinned'; exit 1; }

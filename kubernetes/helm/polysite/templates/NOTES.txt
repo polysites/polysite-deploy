@@ -1,0 +1,26 @@
+Polysite {{ .Chart.AppVersion }} (images {{ include "polysite.image" (dict "ctx" . "img" .Values.image.cms) }}).
+
+Public sites : {{ range .Values.domains.sites }}{{ $.Values.domains.scheme }}://{{ . }}  {{ end }}
+Admin        : {{ .Values.domains.scheme }}://{{ .Values.domains.admin }}/admin
+
+First install: open the admin address and finish first-run setup (it asks for the setup token you put in the Secret as POLYSITE_SETUP_TOKEN).
+Watch it come up:   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+Migration log:      kubectl -n {{ .Release.Namespace }} logs job/{{ include "polysite.fullname" . }}-migrate   (the Job is removed after it succeeds; a failed one stays)
+Health:             kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "polysite.cmsHost" . }} 3001:{{ .Values.cms.service.port }}  then  curl localhost:3001/api/health
+
+Remember:
+ - PAYLOAD_SECRET must never change on a running install. Keep a copy of it apart from the backups.
+{{- if not .Values.media.persistence.enabled }}
+ - media.persistence.enabled is false: every upload is lost when the CMS pod is replaced.
+{{- end }}
+{{- if not .Values.backups.enabled }}
+ - backups.enabled is false: make sure your database has its own backups AND the media volume is copied somewhere (docs/guide/deploy/kubernetes.md).
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+ - postgresql.enabled is a single unmanaged demo database. Do not run a production site on it.
+{{- end }}
+ - Run one CMS and one web replica. Raising them is refused unless you set cms.allowMultiReplica / web.allowMultiReplica, because a role
+   change, the sign-in limit and page caches live in each process's memory and uploads on one disk (guide: "What is NOT safe with more than one replica").
+{{- if and .Values.edge.enabled (eq .Values.ingress.controllerPreset "none") }}
+ - Make sure your ingress controller lets 100 MB bodies and 300 s requests through to the edge proxy.
+{{- end }}

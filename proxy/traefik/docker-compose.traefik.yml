@@ -1,0 +1,114 @@
+# Runs Traefik v3 instead of Caddy in front of the stack, routing by labels on the cms and web services (the usual Traefik way).
+# The same routing, limits and headers as the Caddyfile; dynamic/polysite.yml is the equivalent without labels or Docker socket.
+#
+#   ACME_EMAIL=you@example.org docker compose --env-file .env --env-file .deploy/current.env \
+#     -f docker-compose.prod.yml -f proxy/traefik/docker-compose.traefik.yml up -d
+#
+# Needs Docker Compose 2.24 or newer (the !override tag). One public site domain (SITE_DOMAIN) and the admin domain (CMS_DOMAIN)
+# come from .env; for several site domains edit the three Host(...) rules on the cms and web services into `Host(a) || Host(b)`.
+#
+# Security note: Traefik reads the Docker socket to find the labels, and access to that socket is root on the host. Traefik runs
+# read-only against it here (:ro does not limit what the API allows, though). If that is not acceptable, use dynamic/polysite.yml with
+# the file provider (no socket) or put a socket proxy in front of the socket.
+
+services:
+  # Not started: the Caddy service of the base file is moved behind a profile nobody enables.
+  caddy:
+    profiles: !override ["caddy"]
+
+  traefik:
+    image: traefik:v3.2
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.transport.respondingtimeouts.readtimeout=300s
+      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --log.level=INFO
+      - --accesslog.fields.headers.defaultmode=drop
+      - --accesslog.fields.queryparameters=drop
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/acme
+    depends_on:
+      - web
+      - cms
+
+  cms:
+    labels:
+      traefik.enable: "true"
+      # The public sites' API paths, narrowest first.
+      traefik.http.routers.polysite-media.rule: "Host(`${SITE_DOMAIN}`) && PathPrefix(`/api/media/file/`)"
+      traefik.http.routers.polysite-media.entrypoints: websecure
+      traefik.http.routers.polysite-media.priority: "400"
+      traefik.http.routers.polysite-media.service: polysite-cms
+      traefik.http.routers.polysite-media.middlewares: polysite-api-headers,polysite-media-cache,polysite-limit-100mb
+      traefik.http.routers.polysite-intake.rule: "Host(`${SITE_DOMAIN}`) && PathPrefix(`/api/form-intake/`)"
+      traefik.http.routers.polysite-intake.entrypoints: websecure
+      traefik.http.routers.polysite-intake.priority: "300"
+      traefik.http.routers.polysite-intake.service: polysite-cms
+      traefik.http.routers.polysite-intake.middlewares: polysite-api-headers,polysite-limit-64kb
+      traefik.http.routers.polysite-api.rule: "Host(`${SITE_DOMAIN}`) && PathPrefix(`/api/`)"
+      traefik.http.routers.polysite-api.entrypoints: websecure
+      traefik.http.routers.polysite-api.priority: "200"
+      traefik.http.routers.polysite-api.service: polysite-cms
+      traefik.http.routers.polysite-api.middlewares: polysite-api-headers,polysite-limit-100mb
+      # The admin domain: "/" goes to /admin, everything else to the CMS.
+      traefik.http.routers.polysite-admin-root.rule: "Host(`${CMS_DOMAIN}`) && Path(`/`)"
+      traefik.http.routers.polysite-admin-root.entrypoints: websecure
+      traefik.http.routers.polysite-admin-root.priority: "500"
+      traefik.http.routers.polysite-admin-root.service: noop@internal
+      traefik.http.routers.polysite-admin-root.middlewares: polysite-admin-headers,polysite-admin-root
+      traefik.http.routers.polysite-admin.rule: "Host(`${CMS_DOMAIN}`)"
+      traefik.http.routers.polysite-admin.entrypoints: websecure
+      traefik.http.routers.polysite-admin.priority: "450"
+      traefik.http.routers.polysite-admin.service: polysite-cms
+      traefik.http.routers.polysite-admin.middlewares: polysite-admin-headers,polysite-limit-100mb
+      traefik.http.services.polysite-cms.loadbalancer.server.port: "3001"
+      # Middlewares (shared by the routers above).
+      traefik.http.middlewares.polysite-api-headers.headers.customresponseheaders.X-Content-Type-Options: nosniff
+      traefik.http.middlewares.polysite-api-headers.headers.customresponseheaders.Referrer-Policy: strict-origin-when-cross-origin
+      traefik.http.middlewares.polysite-api-headers.headers.customresponseheaders.Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+      traefik.http.middlewares.polysite-api-headers.headers.customresponseheaders.Server: ""
+      traefik.http.middlewares.polysite-admin-headers.headers.customresponseheaders.X-Content-Type-Options: nosniff
+      traefik.http.middlewares.polysite-admin-headers.headers.customresponseheaders.Referrer-Policy: strict-origin-when-cross-origin
+      traefik.http.middlewares.polysite-admin-headers.headers.customresponseheaders.Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+      traefik.http.middlewares.polysite-admin-headers.headers.customresponseheaders.X-Frame-Options: DENY
+      traefik.http.middlewares.polysite-admin-headers.headers.customresponseheaders.Content-Security-Policy: "frame-ancestors 'none'"
+      traefik.http.middlewares.polysite-admin-headers.headers.customresponseheaders.Server: ""
+      traefik.http.middlewares.polysite-media-cache.headers.customresponseheaders.Cache-Control: "public, max-age=86400"
+      traefik.http.middlewares.polysite-limit-64kb.buffering.maxrequestbodybytes: "65536"
+      traefik.http.middlewares.polysite-limit-64kb.buffering.memrequestbodybytes: "65536"
+      traefik.http.middlewares.polysite-limit-100mb.buffering.maxrequestbodybytes: "100000000"
+      traefik.http.middlewares.polysite-limit-100mb.buffering.memrequestbodybytes: "2097152"
+      traefik.http.middlewares.polysite-admin-root.redirectregex.regex: "^(https?)://([^/]+)/?$$"
+      traefik.http.middlewares.polysite-admin-root.redirectregex.replacement: "$${1}://$${2}/admin"
+      traefik.http.middlewares.polysite-admin-root.redirectregex.permanent: "false"
+
+  web:
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.polysite-web.rule: "Host(`${SITE_DOMAIN}`)"
+      traefik.http.routers.polysite-web.entrypoints: websecure
+      traefik.http.routers.polysite-web.priority: "100"
+      traefik.http.routers.polysite-web.service: polysite-web
+      traefik.http.services.polysite-web.loadbalancer.server.port: "3000"
+
+volumes:
+  traefik-acme:

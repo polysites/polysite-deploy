@@ -1,0 +1,10 @@
+# Flux (v2.3+): the chart lives in an OCI registry. Not tested against a live Flux.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: polysite
+  namespace: polysite
+spec:
+  type: oci
+  interval: 1h
+  url: oci://ghcr.io/polysites/charts

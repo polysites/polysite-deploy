@@ -1,0 +1,9 @@
+# Keeps the GitHub Actions and the Terraform provider current. The Polysite image tags inside cloud-init.yaml are bumped by Renovate (renovate.json).
+version: 2
+updates:
+  - package-ecosystem: terraform
+    directory: /terraform-aws
+    schedule: {interval: monthly}
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: monthly}

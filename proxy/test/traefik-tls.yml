@@ -1,0 +1,24 @@
+# Test only (proxy/test/run.sh): proxy/traefik/traefik.yml with the Let's Encrypt resolver left out. Traefik then serves its
+# own default certificate, which is all the test needs; redirects, TLS options and the entry point names are the production ones.
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    transport:
+      respondingTimeouts:
+        readTimeout: 300s
+    http:
+      tls:
+        options: polysite
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+log:
+  level: INFO

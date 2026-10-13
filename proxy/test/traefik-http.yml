@@ -1,0 +1,13 @@
+# Test only (proxy/test/run.sh): the static configuration of proxy/traefik/traefik.yml without TLS and certificates, so the
+# unchanged routing in dynamic/polysite.yml can be exercised over plain http. The entry point keeps the production name, "websecure".
+entryPoints:
+  websecure:
+    address: ":80"
+    transport:
+      respondingTimeouts:
+        readTimeout: 300s
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+log:
+  level: INFO

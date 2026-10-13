@@ -1,0 +1,20 @@
+name: Validate
+
+# Only lints and validates; it deploys nothing and needs no secrets.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: cloud-init, shellcheck and Docker's repository (sh test.sh)
+        run: sh test.sh
+      - name: Terraform validates
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w/terraform-aws --entrypoint sh hashicorp/terraform:1.10 -c "terraform fmt -check -diff && terraform init -backend=false -input=false && terraform validate"

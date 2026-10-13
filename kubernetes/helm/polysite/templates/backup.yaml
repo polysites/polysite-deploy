@@ -1,0 +1,117 @@
+{{- if .Values.backups.enabled }}
+{{- $name := printf "%s-backup" (include "polysite.fullname" .) }}
+{{- $labels := dict "ctx" . "component" "backup" }}
+{{- if and .Values.backups.persistence.enabled (not .Values.backups.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.backups.persistence.storageClass }}
+  storageClassName: {{ .Values.backups.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backups.persistence.size }}
+---
+{{- end }}
+# One backup per run: a database dump plus the uploads, in one archive, with checksums; old ones pruned; an encrypted copy off the cluster when a remote is set.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  schedule: {{ .Values.backups.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.backups.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.backups.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backups.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            {{- include "polysite.selectorLabels" $labels | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- include "polysite.imagePullSecrets" . | nindent 10 }}
+          serviceAccountName: {{ include "polysite.serviceAccountName" . }}
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile: {type: RuntimeDefault}
+          {{- if and .Values.backups.sameNodeAsCms .Values.media.persistence.enabled }}
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      {{- include "polysite.selectorLabels" (dict "ctx" . "component" "cms") | nindent 22 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: {{ include "polysite.image" (dict "ctx" . "img" .Values.image.backup) | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/opt/backup/backup.sh"]
+              env:
+                - {name: HOME, value: /tmp}
+                - {name: MEDIA_DIR, value: /media}
+                - {name: BACKUP_DIR, value: /backups}
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "polysite.secretName" . }}
+                      key: DATABASE_URL
+              {{- if .Values.backups.existingSecret }}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.backups.existingSecret }}
+              {{- end }}
+              resources:
+                {{- toYaml .Values.backups.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: {drop: [ALL]}
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - {name: media, mountPath: /media, readOnly: true}
+                - {name: backups, mountPath: /backups}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: media
+              {{- if .Values.media.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ default (printf "%s-media" (include "polysite.fullname" .)) .Values.media.persistence.existingClaim }}
+                readOnly: true
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            - name: backups
+              {{- if .Values.backups.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ default $name .Values.backups.persistence.existingClaim }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            - {name: tmp, emptyDir: {}}
+          {{- with .Values.backups.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backups.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

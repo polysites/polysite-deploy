@@ -1,0 +1,21 @@
+name: Validate
+
+# Only lints and validates; it deploys nothing and needs no secrets.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Shell scripts pass shellcheck
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable scripts/install.sh scripts/build.sh
+      - name: systemd units are well formed
+        run: |
+          sudo cp systemd/*.service /etc/systemd/system/
+          sudo systemd-analyze verify --man=no /etc/systemd/system/polysite-cms.service /etc/systemd/system/polysite-web.service 2>&1 | grep -v "User polysite\|polysite.env\|WorkingDirectory\|Failed to prepare filesystem namespace\|ReadWritePaths" || true

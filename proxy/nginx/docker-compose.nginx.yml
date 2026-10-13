@@ -1,0 +1,40 @@
+# Runs nginx instead of Caddy in front of the stack (the same routing, limits and headers: see polysite.conf).
+#
+#   docker compose --env-file .env --env-file .deploy/current.env \
+#     -f docker-compose.prod.yml -f proxy/nginx/docker-compose.nginx.yml up -d
+#
+# Before the first start edit proxy/nginx/polysite.conf (the domains). For https use polysite-tls.conf instead: change the
+# file name in the volume line below and mount the certificates (/etc/letsencrypt, read-only) as the comments say.
+# Needs Docker Compose 2.24 or newer (the !override tag).
+
+services:
+  # Not started: the Caddy service of the base file is moved behind a profile nobody enables.
+  caddy:
+    profiles: !override ["caddy"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The master process binds 80 and 443 and then hands the workers to the unprivileged nginx user.
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./proxy/nginx/polysite.conf:/etc/nginx/conf.d/polysite.conf:ro
+      # The image's own example site would answer on port 80 as well.
+      - /dev/null:/etc/nginx/conf.d/default.conf:ro
+      # https: certificates issued by certbot on the host (certbot certonly --webroot -w /var/www/certbot ...):
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+      # - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - web
+      - cms

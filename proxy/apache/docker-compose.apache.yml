@@ -1,0 +1,41 @@
+# Runs Apache httpd instead of Caddy in front of the stack (the same routing, limits and headers: see polysite.conf).
+#
+#   docker compose --env-file .env --env-file .deploy/current.env \
+#     -f docker-compose.prod.yml -f proxy/apache/docker-compose.apache.yml up -d
+#
+# Before the first start edit proxy/apache/polysite.conf (the domains). For https add -DTLS to the command below (it then reads
+# polysite-tls.conf and listens on 443) and mount the certificates as the comments say.
+# Needs Docker Compose 2.24 or newer (the !override tag).
+
+services:
+  # Not started: the Caddy service of the base file is moved behind a profile nobody enables.
+  caddy:
+    profiles: !override ["caddy"]
+
+  apache:
+    image: httpd:2.4-alpine
+    restart: unless-stopped
+    command: ["httpd-foreground"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The parent process binds 80 and 443 and then runs the workers as the unprivileged daemon user.
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+      - CHOWN
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./proxy/apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ./proxy/apache/polysite.conf:/usr/local/apache2/conf/polysite/polysite.conf:ro
+      - ./proxy/apache/polysite-tls.conf:/usr/local/apache2/conf/polysite/polysite-tls.conf:ro
+      # https: certificates issued by certbot on the host (certbot certonly --webroot -w /var/www/certbot ...):
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+      # - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - web
+      - cms

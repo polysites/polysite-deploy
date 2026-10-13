@@ -1,0 +1,53 @@
+# Polysite behind Traefik v3: static configuration (entry points, certificates). Routing is in dynamic/polysite.yml.
+#
+#   docker run -d --name traefik --network <the stack's network> -p 80:80 -p 443:443 \
+#     -v $PWD/traefik.yml:/etc/traefik/traefik.yml:ro -v $PWD/dynamic:/etc/traefik/dynamic:ro \
+#     -v traefik-acme:/acme traefik:v3.2
+# or as a service in the stack's compose project (docker-compose.traefik.yml does this and routes with labels instead).
+#
+# Edit the e-mail address below (Let's Encrypt writes to it about expiring certificates). Domains are in dynamic/polysite.yml.
+# The routers there are bound to the "websecure" entry point, which terminates TLS and gets one certificate per hostname by itself;
+# "web" only redirects to it (and answers the HTTP-01 challenge, which Traefik handles before any redirect). Set SITE_SCHEME=https
+# and CMS_SCHEME=https in .env.
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    # Imports and large uploads take longer than Traefik's default 60 s body-read limit; Caddy has no limit at all.
+    transport:
+      respondingTimeouts:
+        readTimeout: 300s
+    http:
+      tls:
+        certResolver: letsencrypt
+        options: polysite
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: you@example.org
+      storage: /acme/acme.json
+      httpChallenge:
+        entryPoint: web
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+accessLog:
+  # No query strings or cookies in the log: they can carry tokens.
+  fields:
+    headers:
+      defaultMode: drop
+    queryParameters: drop

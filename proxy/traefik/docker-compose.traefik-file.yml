@@ -1,0 +1,36 @@
+# Runs Traefik v3 instead of Caddy in front of the stack, routing from dynamic/polysite.yml (the file provider): no Docker socket.
+# The same routing, limits and headers as the Caddyfile. docker-compose.traefik.yml is the variant that routes with labels.
+#
+#   docker compose --env-file .env --env-file .deploy/current.env \
+#     -f docker-compose.prod.yml -f proxy/traefik/docker-compose.traefik-file.yml up -d
+#
+# Before the first start edit proxy/traefik/dynamic/polysite.yml (the domains) and the e-mail in traefik.yml.
+# Needs Docker Compose 2.24 or newer (the !override tag).
+
+services:
+  # Not started: the Caddy service of the base file is moved behind a profile nobody enables.
+  caddy:
+    profiles: !override ["caddy"]
+
+  traefik:
+    image: traefik:v3.2
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./proxy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./proxy/traefik/dynamic:/etc/traefik/dynamic:ro
+      - traefik-acme:/acme
+    depends_on:
+      - web
+      - cms
+
+volumes:
+  traefik-acme:

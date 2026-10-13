@@ -1,0 +1,34 @@
+[Unit]
+Description=Polysite web (the public sites, Nuxt)
+After=network-online.target polysite-cms.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polysite
+Group=polysite
+WorkingDirectory=/opt/polysite/src/apps/web
+EnvironmentFile=/etc/polysite/polysite.env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+ExecStart=/usr/bin/node .output/server/index.mjs
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

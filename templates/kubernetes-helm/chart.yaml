@@ -1,0 +1,4 @@
+# The one place the Polysite version is pinned. Chart 0.1.x runs Polysite core 0.1.x (the chart's default image tag is v<appVersion>).
+# Renovate bumps the line below when a new chart is published; scripts/install.sh, the Argo CD and Flux examples use the same version.
+# renovate: chart=ghcr.io/polysites/charts/polysite
+chartVersion: 0.1.0

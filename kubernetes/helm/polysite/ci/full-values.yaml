@@ -1,0 +1,21 @@
+# Used by kubernetes/test/lint.sh: every optional piece switched on.
+image: {tag: v0.1.0, pullSecrets: [{name: ghcr}]}
+domains:
+  sites: [www.example.org, news.example.net]
+  admin: admin.example.org
+secrets:
+  payloadSecret: "0123456789abcdef0123456789abcdef0123456789abcdef"
+  revalidateSecret: "fedcba9876543210fedcba9876543210fedcba9876543210"
+  setupToken: "setup-token-0123456789abcdef0123456789"
+  smtpPassword: smtp-secret
+postgresql: {enabled: true, password: demo-password-0123456789}
+redis: {enabled: true, persistence: {enabled: true}}
+cms: {replicaCount: 2, allowMultiReplica: true, pdb: {enabled: true}}
+web: {replicaCount: 2, allowMultiReplica: true, autoscaling: {enabled: true}}
+media: {persistence: {accessModes: [ReadWriteMany], size: 20Gi, storageClass: nfs}}
+edge: {replicaCount: 2, pdb: {enabled: true}}
+backups: {enabled: true, existingSecret: polysite-backup, persistence: {enabled: true}, sameNodeAsCms: false}
+networkPolicy: {enabled: true, egressTo: [{ipBlock: {cidr: 0.0.0.0/0}}]}
+ingress: {className: traefik, tls: {issuer: ca-issuer}}
+commonLabels: {team: web}
+commonAnnotations: {owner: web-team}

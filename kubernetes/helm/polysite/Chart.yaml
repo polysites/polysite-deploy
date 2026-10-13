@@ -1,0 +1,14 @@
+apiVersion: v2
+name: polysite
+description: Polysite, a multisite CMS (Payload admin and API, Nuxt public sites), with a safe migration step, an optional edge proxy, backups and an optional demo database.
+type: application
+# The chart's own version. Bump it with any change to the chart.
+version: 0.1.0
+# The Polysite release these templates were written and tested against; the default image tag is v<appVersion>.
+# Keep it equal to the VERSION file when a release is cut (ops/release/bump.sh does not touch this file yet).
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/polysites/polysite
+sources:
+  - https://github.com/polysites/polysite
+keywords: [cms, multisite, payload, nuxt]

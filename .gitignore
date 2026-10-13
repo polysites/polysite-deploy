@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.tgz
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Claude Code local instructions (they live in ../.claude, not in this repository)
+CLAUDE.local.md

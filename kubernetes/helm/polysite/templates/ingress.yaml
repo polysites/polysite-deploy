@@ -1,0 +1,78 @@
+{{- if .Values.ingress.enabled }}
+{{- $labels := dict "ctx" . "component" "ingress" }}
+{{- $hosts := concat .Values.domains.sites (list .Values.domains.admin) }}
+{{- $edge := .Values.edge.enabled }}
+{{- $edgeSvc := printf "%s-edge" (include "polysite.fullname" .) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "polysite.fullname" . }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+  annotations:
+    {{- if eq .Values.ingress.controllerPreset "ingress-nginx" }}
+    # ingress-nginx limits bodies to 1 MB and waits 60 s by default; the edge proxy applies the real limits (64 KB / 100 MB).
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    {{- end }}
+    {{- if .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- else if .Values.ingress.tls.issuer }}
+    cert-manager.io/issuer: {{ .Values.ingress.tls.issuer | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    {{- if .Values.ingress.tls.secretName }}
+    - hosts:
+        {{- range $hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+    {{- else }}
+    {{- range $i, $h := $hosts }}
+    - hosts: [{{ $h | quote }}]
+      secretName: {{ printf "%s-tls-%d" (include "polysite.fullname" $) $i }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.domains.sites }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          {{- if $edge }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: {{ $edgeSvc }}, port: {number: {{ $.Values.edge.service.port }}}}
+          {{- else }}
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: {name: {{ include "polysite.cmsHost" $ }}, port: {number: {{ $.Values.cms.service.port }}}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: {{ include "polysite.webHost" $ }}, port: {number: {{ $.Values.web.service.port }}}}
+          {{- end }}
+    {{- end }}
+    - host: {{ .Values.domains.admin | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              {{- if $edge }}
+              service: {name: {{ $edgeSvc }}, port: {number: {{ .Values.edge.service.port }}}}
+              {{- else }}
+              service: {name: {{ include "polysite.cmsHost" . }}, port: {number: {{ .Values.cms.service.port }}}}
+              {{- end }}
+{{- end }}

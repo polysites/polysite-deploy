@@ -1,0 +1,2 @@
+{{- /* Renders nothing: refuses an install that cannot work, with a message that says what to change. */ -}}
+{{- include "polysite.guards" . -}}

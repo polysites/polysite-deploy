@@ -1,0 +1,23 @@
+{{- if and .Values.media.persistence.enabled (not .Values.media.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "polysite.fullname" . }}-media
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "media") | nindent 4 }}
+  annotations:
+    # Uploads are the only copy of the media: `helm uninstall` must not delete them. Delete the claim by hand when you mean it.
+    helm.sh/resource-policy: keep
+    {{- with .Values.media.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.media.persistence.accessModes | nindent 4 }}
+  {{- if .Values.media.persistence.storageClass }}
+  storageClassName: {{ .Values.media.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.media.persistence.size }}
+{{- end }}

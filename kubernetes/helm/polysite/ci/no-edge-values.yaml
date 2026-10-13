@@ -1,0 +1,8 @@
+# Used by kubernetes/test/lint.sh: no edge proxy, no migration Job, no persistence.
+image: {tag: v0.1.0}
+domains: {sites: [www.example.org], admin: admin.example.org, scheme: http}
+secrets: {existingSecret: polysite-secrets}
+edge: {enabled: false}
+migrations: {job: {enabled: false}}
+media: {persistence: {enabled: false}}
+ingress: {controllerPreset: none}

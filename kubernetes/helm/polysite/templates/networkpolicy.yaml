@@ -1,0 +1,142 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $inst := .Release.Name }}
+{{- $nameLabel := include "polysite.name" . }}
+# Default deny for every pod of this release, then open only what the stack needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "polysite.fullname" . }}-default-deny
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $nameLabel }}
+      app.kubernetes.io/instance: {{ $inst }}
+  policyTypes: [Ingress]
+---
+{{- if .Values.edge.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "polysite.fullname" . }}-edge
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" (dict "ctx" . "component" "edge") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+      ports:
+        - {port: 8080, protocol: TCP}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "polysite.fullname" . }}-cms
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" (dict "ctx" . "component" "cms") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- if .Values.edge.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "polysite.selectorLabels" (dict "ctx" . "component" "edge") | nindent 14 }}
+        {{- else }}
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+        {{- end }}
+        - podSelector:
+            matchLabels:
+              {{- include "polysite.selectorLabels" (dict "ctx" . "component" "web") | nindent 14 }}
+      ports:
+        - {port: 3001, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "polysite.fullname" . }}-web
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- if .Values.edge.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "polysite.selectorLabels" (dict "ctx" . "component" "edge") | nindent 14 }}
+        {{- else }}
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+        {{- end }}
+        - podSelector:
+            matchLabels:
+              {{- include "polysite.selectorLabels" (dict "ctx" . "component" "cms") | nindent 14 }}
+      ports:
+        - {port: 3000, protocol: TCP}
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "polysite.fullname" . }}-postgres
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range (list "cms" "migrate" "backup") }}
+        - podSelector:
+            matchLabels:
+              {{- include "polysite.selectorLabels" (dict "ctx" $ "component" .) | nindent 14 }}
+        {{- end }}
+      ports:
+        - {port: 5432, protocol: TCP}
+{{- end }}
+{{- if .Values.networkPolicy.egressTo }}
+---
+# Once egress is listed, the stack's pods may reach only each other, cluster DNS and what you list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "polysite.fullname" . }}-egress
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $nameLabel }}
+      app.kubernetes.io/instance: {{ $inst }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $nameLabel }}
+              app.kubernetes.io/instance: {{ $inst }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        {{- toYaml .Values.networkPolicy.egressTo | nindent 8 }}
+{{- end }}
+{{- end }}

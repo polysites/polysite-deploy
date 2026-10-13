@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Polysite images pinned as <registry>/polysite-<cms|web|backup>:vX.Y.Z in any file",
+      "managerFilePatterns": ["/(^|/)[^/]*\\.(ya?ml|env|example|sh|tf|service)$/", "/(^|/)\\.env\\.example$/", "/(^|/)cloud-init\\.ya?ml$/"],
+      "matchStrings": ["(?<depName>[A-Za-z0-9./:_-]*/polysite-(?:cms|web|backup)):(?<currentValue>v\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9.]+)?)"],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "The Polysite Helm chart version in values, Argo CD and Flux files",
+      "managerFilePatterns": ["/(^|/)[^/]*\\.ya?ml$/"],
+      "matchStrings": ["#\\s*renovate:\\s*chart=(?<depName>\\S+)\\s*\\n\\s*(?:targetRevision|version|chartVersion):\\s*[\"']?(?<currentValue>[0-9][^\"'\\s]*)"],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [{"matchPackageNames": ["/polysite-/"], "groupName": "polysite", "separateMinorPatch": true}]
+}

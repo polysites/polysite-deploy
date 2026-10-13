@@ -1,0 +1,30 @@
+# Argo CD Application that installs the chart from the OCI registry with the values in this repository (Argo CD 2.8+ with OCI support,
+# multiple sources). Replace the repository URL below with YOUR copy of this template. Create the Secret out of band
+# (scripts/create-secret.sh or an External Secrets operator). Not tested against a live Argo CD.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: polysite
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: polysite
+  sources:
+    - repoURL: ghcr.io/polysites/charts
+      chart: polysite
+      # renovate: chart=ghcr.io/polysites/charts/polysite
+      targetRevision: 0.1.0
+      helm:
+        valueFiles:
+          - $values/values.yaml
+    - repoURL: https://github.com/YOUR-ORG/YOUR-POLYSITE-DEPLOYMENT.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

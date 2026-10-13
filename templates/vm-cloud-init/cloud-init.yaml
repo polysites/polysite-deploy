@@ -1,0 +1,366 @@
+#cloud-config
+# Polysite on a fresh Ubuntu 22.04 / 24.04 VM: Docker, a firewall, automatic security updates, swap if the machine is small, and the stack of
+# templates/compose-caddy (Caddy with automatic HTTPS, the CMS, the site, PostgreSQL, nightly backups), started by systemd.
+#
+# 1. Replace the two domain names in /etc/polysite-bootstrap.env below.  2. Paste this file as the VM's "user data" when you create it
+# (AWS EC2: Advanced details > User data; GCP: Metadata > user-data; DigitalOcean, Hetzner: User data).  3. Point DNS at the VM.
+# 4. After the first boot (3 to 6 minutes) read /root/polysite-setup.txt for the setup token and open https://<admin domain>/admin.
+# Progress: tail -f /var/log/polysite-bootstrap.log.  Needs: 2 vCPU and 4 GB RAM recommended (2 GB works with the swap file), 20 GB disk,
+# inbound 22, 80 and 443.  The images are pinned in /opt/polysite/docker-compose.yml.
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - ufw
+  - unattended-upgrades
+write_files:
+  - path: /etc/polysite-bootstrap.env
+    permissions: "0644"
+    owner: root:root
+    content: |
+      # EDIT THESE TWO LINES before the first boot (or afterwards, then run: sh /opt/polysite/bootstrap.sh)
+      SITE_DOMAIN=www.example.org
+      ADMIN_DOMAIN=admin.example.org
+  - path: /opt/polysite/bootstrap.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+      #!/bin/bash
+      # First-boot provisioning for a Polysite server on Ubuntu 22.04 / 24.04. Run once by cloud-init (output: /var/log/polysite-bootstrap.log).
+      # Reads /etc/polysite-bootstrap.env (the two domains). Safe to run again: every step checks first.
+      set -euo pipefail
+      exec > >(tee -a /var/log/polysite-bootstrap.log) 2>&1
+      echo "== polysite bootstrap $(date -u +%FT%TZ)"
+      # shellcheck disable=SC1091
+      . /etc/polysite-bootstrap.env
+      : "${SITE_DOMAIN:?}" "${ADMIN_DOMAIN:?}"
+      case "$SITE_DOMAIN$ADMIN_DOMAIN" in *example.org*|*example.net*) echo "Edit /etc/polysite-bootstrap.env (the domains are still examples), then run: sh /opt/polysite/bootstrap.sh"; exit 1 ;; esac
+      
+      # --- swap: the CMS needs about 1 GB at start-up, so a small VM gets a swap file
+      if [ "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)" -lt 3500 ] && ! swapon --show | grep -q .; then
+        fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+        grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      fi
+      
+      # --- Docker Engine from Docker's own apt repository (the key's fingerprint is checked, not trusted blindly)
+      if ! command -v docker >/dev/null 2>&1; then
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.asc
+        fp=$(gpg --show-keys --with-colons /tmp/docker.asc | awk -F: '/^fpr:/ {print $10; exit}')
+        [ "$fp" = "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ] || { echo "Docker's signing key has an unexpected fingerprint ($fp): stopping"; exit 1; }
+        gpg --dearmor < /tmp/docker.asc > /etc/apt/keyrings/docker.gpg && chmod a+r /etc/apt/keyrings/docker.gpg
+        # shellcheck disable=SC1091
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+        apt-get update -y
+        DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+      fi
+      systemctl enable --now docker
+      # Keep Docker's own logs from filling the disk.
+      [ -f /etc/docker/daemon.json ] || { echo '{"log-driver":"json-file","log-opts":{"max-size":"20m","max-file":"5"}}' > /etc/docker/daemon.json; systemctl restart docker; }
+      
+      # --- firewall: only SSH, http and https
+      ufw allow OpenSSH >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
+      ufw --force enable
+      
+      # --- unattended security upgrades; the server does not reboot by itself
+      systemctl enable --now unattended-upgrades
+      
+      # --- the stack
+      cd /opt/polysite
+      if [ ! -f .env ]; then
+        ./init.sh "$SITE_DOMAIN" "$ADMIN_DOMAIN" | tee /root/polysite-setup.txt
+        chmod 600 /root/polysite-setup.txt
+      fi
+      systemctl daemon-reload
+      systemctl enable --now polysite.service
+      echo "== done. Point DNS for $SITE_DOMAIN and $ADMIN_DOMAIN at this server; then open https://$ADMIN_DOMAIN/admin and use the setup token in /root/polysite-setup.txt"
+  - path: /etc/systemd/system/polysite.service
+    permissions: "0644"
+    owner: root:root
+    content: |
+      [Unit]
+      Description=Polysite (Docker Compose)
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+      
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/polysite
+      ExecStart=/usr/bin/docker compose up -d --remove-orphans
+      ExecStop=/usr/bin/docker compose stop
+      TimeoutStartSec=600
+      
+      [Install]
+      WantedBy=multi-user.target
+  - path: /opt/polysite/docker-compose.yml
+    permissions: "0644"
+    owner: root:root
+    content: |
+      # Polysite on one server: Docker Compose, Caddy for automatic HTTPS, PostgreSQL in a container, nightly backups.
+      # Everything is pinned to a release. Upgrade by changing the three version tags below (Dependabot or Renovate opens that pull request),
+      # then: docker compose pull && docker compose up -d
+      #
+      # Tested with Polysite core 0.1.x (see README.md). The registry default is the project's namespace; POLYSITE_REGISTRY in .env points
+      # at a mirror of your own. Needs Docker Compose 2.24 or newer.
+      
+      name: polysite
+      
+      services:
+        caddy:
+          image: caddy:2-alpine
+          restart: unless-stopped
+          security_opt: ["no-new-privileges:true"]
+          cap_drop: [ALL]
+          cap_add: [NET_BIND_SERVICE]
+          ports: ["80:80", "443:443"]
+          volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy-data:/data
+            - caddy-config:/config
+          env_file: .env
+          depends_on: [web, cms]
+      
+        web:
+          image: ${POLYSITE_REGISTRY:-ghcr.io/polysites}/polysite-web:v0.1.0
+          restart: unless-stopped
+          security_opt: ["no-new-privileges:true"]
+          cap_drop: [ALL]
+          env_file: .env
+          environment:
+            NUXT_PUBLIC_CMS_SERVER_URL: ${CMS_SCHEME:-https}://${CMS_DOMAIN}
+          depends_on: [cms]
+      
+        cms:
+          image: ${POLYSITE_REGISTRY:-ghcr.io/polysites}/polysite-cms:v0.1.0
+          restart: unless-stopped
+          security_opt: ["no-new-privileges:true"]
+          cap_drop: [ALL]
+          env_file: .env
+          volumes:
+            - media-data:/repo/apps/cms/media
+          depends_on:
+            db: {condition: service_healthy}
+      
+        db:
+          image: postgres:16-alpine
+          restart: unless-stopped
+          env_file: .env
+          environment:
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            POSTGRES_DB: ${POSTGRES_DB}
+          volumes:
+            - db-data:/var/lib/postgresql/data
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+            interval: 5s
+            timeout: 5s
+            retries: 20
+      
+        backup:
+          image: ${POLYSITE_REGISTRY:-ghcr.io/polysites}/polysite-backup:v0.1.0
+          restart: unless-stopped
+          env_file: .env
+          volumes:
+            - media-data:/media:ro
+            - ${BACKUP_HOST_DIR:-./backups}:/backups
+          depends_on:
+            db: {condition: service_healthy}
+      
+        # Not started by `up`: docker compose --profile restore run --rm restore latest --yes   (stop web and cms first)
+        restore:
+          profiles: ["restore"]
+          image: ${POLYSITE_REGISTRY:-ghcr.io/polysites}/polysite-backup:v0.1.0
+          entrypoint: ["/opt/backup/restore.sh"]
+          env_file: .env
+          volumes:
+            - media-data:/media
+            - ${BACKUP_HOST_DIR:-./backups}:/backups
+      
+      volumes:
+        caddy-data:
+        caddy-config:
+        db-data:
+        media-data:
+  - path: /opt/polysite/Caddyfile
+    permissions: "0644"
+    owner: root:root
+    content: |
+      # Local dev: plain HTTP on localhost, no TLS needed. Production sets
+      # SITE_SCHEME=https in .env, which switches Caddy into its normal
+      # automatic-HTTPS mode. This split exists because Caddy auto-upgrades
+      # "localhost" to HTTPS by default even without an explicit scheme — caught
+      # while verifying this stack end to end: curl/browsers got a 308 redirect to
+      # a self-signed local-CA cert they don't trust. An explicit http:// scheme
+      # turns that upgrade off for exactly the address it's bound to.
+      #
+      # Production: replace the {$SITE_DOMAIN} / {$CMS_DOMAIN} values (via env vars)
+      # with the real per-client hostnames, and set SITE_SCHEME=https /
+      # CMS_SCHEME=https. Caddy then requests and renews a Let's Encrypt certificate
+      # automatically for each hostname — no wildcard DNS or manual cert management
+      # required, whether a site is a subdomain of one domain or a fully separate
+      # root domain on a different registrar.
+      
+      # Headers for what the CMS answers (the admin and the API). The public site's own pages get theirs from the web app
+      # (nuxt-security); the API and uploaded files, which come from the CMS, had none: no HSTS, nothing stopping a browser from
+      # guessing a file's type. Strict-Transport-Security is ignored by browsers on plain http, so it is harmless in local development.
+      (api_headers) {
+      	header {
+      		X-Content-Type-Options nosniff
+      		Referrer-Policy strict-origin-when-cross-origin
+      		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+      		-Server
+      	}
+      }
+      
+      # The admin: the same, and it may not be put in a frame on another site (clickjacking).
+      (admin_headers) {
+      	import api_headers
+      	header {
+      		X-Frame-Options DENY
+      		Content-Security-Policy "frame-ancestors 'none'"
+      	}
+      }
+      
+      # The web app serves its own scripts, styles and fonts, so (unlike the core repository) no static folder is shared with Caddy.
+      # Every public site shares this one block -- which content a request gets is
+      # decided in the app (usePayloadPage / useCommitments match each record's
+      # `site` relationship against the request hostname), not here. Local dev: set
+      # SITE_DOMAIN=*.localhost in .env and every <name>.localhost is served; add a
+      # Site record in the CMS with that domain. A more specific host (the CMS
+      # domain below) still wins over the wildcard. A wildcard can't get an
+      # automatic HTTPS certificate, so production names its real domains instead.
+      {$SITE_SCHEME:http}://{$SITE_DOMAIN:localhost} {
+      
+      	# Uploaded files are immutable (Payload gives a re-upload a new filename),
+      	# but it sends no Cache-Control, so browsers re-download every image on every
+      	# page view. Public sites only -- the admin domain below stays uncached.
+      	handle /api/media/file/* {
+      		import api_headers
+      		reverse_proxy cms:3001 {
+      			header_down Cache-Control "public, max-age=86400"
+      		}
+      	}
+      
+      	# A visitor's form submission is tiny. The app checks the declared size, but a body sent in chunks declares none,
+      	# so the limit is enforced here as well.
+      	handle /api/form-intake/* {
+      		import api_headers
+      		request_body {
+      			max_size 64KB
+      		}
+      		reverse_proxy cms:3001
+      	}
+      
+      	# Client-side (browser) calls to Payload go through here rather than
+      	# hitting cms directly — the browser can't resolve a
+      	# Docker-internal service name, and this keeps everything on one origin
+      	# (no CORS setup needed). Server-side (SSR) calls skip this proxy hop
+      	# entirely and go straight to cms — see apps/web/nuxt.config.ts.
+      	# The largest body is an upload; the app caps one file (POLYSITE_MAX_UPLOAD_MB, 25 by default) and this is the outer bound.
+      	handle /api/* {
+      		import api_headers
+      		request_body {
+      			max_size 100MB
+      		}
+      		reverse_proxy cms:3001
+      	}
+      
+      	handle {
+      		reverse_proxy web:3000
+      	}
+      }
+      
+      
+      {$CMS_SCHEME:http}://{$CMS_DOMAIN:admin.localhost} {
+      	import admin_headers
+      
+      	request_body {
+      		max_size 100MB
+      	}
+      
+      	# The bare root has no page of its own on this domain -- it's the
+      	# admin/API backend, not a site. Redirect there instead of a 404.
+      	redir / /admin
+      
+      	reverse_proxy cms:3001
+      }
+  - path: /opt/polysite/.env.example
+    permissions: "0644"
+    owner: root:root
+    content: |
+      # Copy to .env (or run ./init.sh, which writes it with fresh secrets). Never commit .env.
+      # Every variable is explained in the Polysite docs: https://polysites.github.io/polysite/guide/configuration
+      
+      # --- Addresses. Real DNS names pointing at this server; Caddy gets a certificate for each by itself.
+      SITE_DOMAIN=www.example.org
+      CMS_DOMAIN=admin.example.org
+      SITE_SCHEME=https
+      CMS_SCHEME=https
+      
+      # --- Secrets. With https the CMS refuses to start on placeholders or values under 32 characters.
+      # Generate each with:  openssl rand -base64 48      PAYLOAD_SECRET must never change on a running install.
+      PAYLOAD_SECRET=
+      REVALIDATE_SECRET=
+      NUXT_REVALIDATE_SECRET=
+      # Required over https: asked for on the first-run page, so only you can create the first administrator.
+      POLYSITE_SETUP_TOKEN=
+      
+      # --- Database (the db container in docker-compose.yml). DATABASE_URL must use the same password.
+      POSTGRES_USER=polysite
+      POSTGRES_PASSWORD=
+      POSTGRES_DB=polysite
+      DATABASE_URL=postgres://polysite:CHANGE_ME_TO_THE_SAME_PASSWORD@db:5432/polysite
+      
+      # --- How the apps reach each other (leave as they are)
+      NUXT_PUBLIC_API_BASE=/api
+      NUXT_API_BASE_INTERNAL=http://cms:3001/api
+      NUXT_REVALIDATE_URL=http://web:3000/api/revalidate
+      
+      # --- Registry for the images (default: the project's). Change only for a mirror of your own.
+      # POLYSITE_REGISTRY=ghcr.io/polysites
+      
+      # --- Backups (nightly 03:17 UTC, kept 7 days / 4 weeks / 6 months, a test restore every Sunday)
+      # BACKUP_HOST_DIR=./backups
+      # An off-site copy is sent only if encrypted: both of these, a passphrase of 16+ characters stored somewhere other than this server.
+      # BACKUP_RCLONE_REMOTE=offsite:my-bucket/polysite
+      # BACKUP_ENCRYPTION_PASSPHRASE=
+      # RCLONE_CONFIG_OFFSITE_TYPE=s3
+      # RCLONE_CONFIG_OFFSITE_PROVIDER=AWS
+      # RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID=
+      # RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY=
+      # RCLONE_CONFIG_OFFSITE_REGION=us-east-1
+      # BACKUP_PING_URL=
+      
+      # --- Optional: email (SMTP), telemetry. See the configuration page of the docs.
+      # SMTP_HOST=
+      # SMTP_PORT=587
+      # SMTP_USER=
+      # SMTP_PASS=
+  - path: /opt/polysite/init.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+      #!/bin/sh
+      # Writes .env from .env.example with fresh random secrets, for the domains you give.
+      #   ./init.sh www.example.org admin.example.org
+      # Prints the setup token you will need on the first-run page. Refuses to overwrite an existing .env.
+      set -eu
+      [ $# -eq 2 ] || { echo "usage: ./init.sh <site domain> <admin domain>"; exit 2; }
+      [ ! -e .env ] || { echo ".env already exists; remove it first if you really want new secrets (PAYLOAD_SECRET must not change on a running install)"; exit 1; }
+      rand() { head -c 48 /dev/urandom | base64 | tr -d '\n/+=' | head -c 48; }
+      PG=$(rand); PS=$(rand); RS=$(rand); TOKEN=$(rand)
+      sed -e "s|^SITE_DOMAIN=.*|SITE_DOMAIN=$1|" -e "s|^CMS_DOMAIN=.*|CMS_DOMAIN=$2|" \
+          -e "s|^PAYLOAD_SECRET=.*|PAYLOAD_SECRET=$PS|" -e "s|^REVALIDATE_SECRET=.*|REVALIDATE_SECRET=$RS|" -e "s|^NUXT_REVALIDATE_SECRET=.*|NUXT_REVALIDATE_SECRET=$RS|" \
+          -e "s|^POLYSITE_SETUP_TOKEN=.*|POLYSITE_SETUP_TOKEN=$TOKEN|" -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$PG|" \
+          -e "s|^DATABASE_URL=.*|DATABASE_URL=postgres://polysite:$PG@db:5432/polysite|" .env.example > .env
+      chmod 600 .env
+      echo "Wrote .env. Setup token for the first-run page: $TOKEN"
+      echo "Next: point DNS for $1 and $2 at this server, then:  docker compose up -d   and open https://$2/admin"
+runcmd:
+  - [bash, /opt/polysite/bootstrap.sh]
+final_message: "Polysite bootstrap finished after $UPTIME seconds. See /root/polysite-setup.txt and /var/log/polysite-bootstrap.log"

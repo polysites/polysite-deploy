@@ -1,0 +1,99 @@
+# Local dev: plain HTTP on localhost, no TLS needed. Production sets
+# SITE_SCHEME=https in .env, which switches Caddy into its normal
+# automatic-HTTPS mode. This split exists because Caddy auto-upgrades
+# "localhost" to HTTPS by default even without an explicit scheme — caught
+# while verifying this stack end to end: curl/browsers got a 308 redirect to
+# a self-signed local-CA cert they don't trust. An explicit http:// scheme
+# turns that upgrade off for exactly the address it's bound to.
+#
+# Production: replace the {$SITE_DOMAIN} / {$CMS_DOMAIN} values (via env vars)
+# with the real per-client hostnames, and set SITE_SCHEME=https /
+# CMS_SCHEME=https. Caddy then requests and renews a Let's Encrypt certificate
+# automatically for each hostname — no wildcard DNS or manual cert management
+# required, whether a site is a subdomain of one domain or a fully separate
+# root domain on a different registrar.
+
+# Headers for what the CMS answers (the admin and the API). The public site's own pages get theirs from the web app
+# (nuxt-security); the API and uploaded files, which come from the CMS, had none: no HSTS, nothing stopping a browser from
+# guessing a file's type. Strict-Transport-Security is ignored by browsers on plain http, so it is harmless in local development.
+(api_headers) {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+}
+
+# The admin: the same, and it may not be put in a frame on another site (clickjacking).
+(admin_headers) {
+	import api_headers
+	header {
+		X-Frame-Options DENY
+		Content-Security-Policy "frame-ancestors 'none'"
+	}
+}
+
+# The web app serves its own scripts, styles and fonts, so (unlike the core repository) no static folder is shared with Caddy.
+# Every public site shares this one block -- which content a request gets is
+# decided in the app (usePayloadPage / useCommitments match each record's
+# `site` relationship against the request hostname), not here. Local dev: set
+# SITE_DOMAIN=*.localhost in .env and every <name>.localhost is served; add a
+# Site record in the CMS with that domain. A more specific host (the CMS
+# domain below) still wins over the wildcard. A wildcard can't get an
+# automatic HTTPS certificate, so production names its real domains instead.
+{$SITE_SCHEME:http}://{$SITE_DOMAIN:localhost} {
+
+	# Uploaded files are immutable (Payload gives a re-upload a new filename),
+	# but it sends no Cache-Control, so browsers re-download every image on every
+	# page view. Public sites only -- the admin domain below stays uncached.
+	handle /api/media/file/* {
+		import api_headers
+		reverse_proxy 127.0.0.1:3001 {
+			header_down Cache-Control "public, max-age=86400"
+		}
+	}
+
+	# A visitor's form submission is tiny. The app checks the declared size, but a body sent in chunks declares none,
+	# so the limit is enforced here as well.
+	handle /api/form-intake/* {
+		import api_headers
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	# Client-side (browser) calls to Payload go through here rather than
+	# hitting cms directly — the browser can't resolve a
+	# Docker-internal service name, and this keeps everything on one origin
+	# (no CORS setup needed). Server-side (SSR) calls skip this proxy hop
+	# entirely and go straight to cms — see apps/web/nuxt.config.ts.
+	# The largest body is an upload; the app caps one file (POLYSITE_MAX_UPLOAD_MB, 25 by default) and this is the outer bound.
+	handle /api/* {
+		import api_headers
+		request_body {
+			max_size 100MB
+		}
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+
+{$CMS_SCHEME:http}://{$CMS_DOMAIN:admin.localhost} {
+	import admin_headers
+
+	request_body {
+		max_size 100MB
+	}
+
+	# The bare root has no page of its own on this domain -- it's the
+	# admin/API backend, not a site. Redirect there instead of a 404.
+	redir / /admin
+
+	reverse_proxy 127.0.0.1:3001
+}

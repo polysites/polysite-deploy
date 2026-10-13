@@ -1,0 +1,32 @@
+# Your Polysite values. The defaults and every option are documented in the chart:
+# https://github.com/polysites/polysite/blob/main/kubernetes/helm/polysite/values.yaml
+#
+# A production-shaped starting point: an EXTERNAL PostgreSQL (in the Secret), an ingress controller, cert-manager for TLS, one CMS replica
+# and one web replica (the chart refuses more: read "What is NOT safe with more than one replica" in the Kubernetes guide).
+
+domains:
+  sites: [www.example.org]      # public site hostnames
+  admin: admin.example.org      # admin and API hostname
+  scheme: https
+
+secrets:
+  # Made beforehand by scripts/create-secret.sh (or your secret manager): PAYLOAD_SECRET, REVALIDATE_SECRET, POLYSITE_SETUP_TOKEN, DATABASE_URL.
+  existingSecret: polysite-secrets
+
+ingress:
+  className: nginx                    # your ingress controller's class
+  tls:
+    clusterIssuer: letsencrypt-prod   # a cert-manager ClusterIssuer; empty if you manage certificates yourself
+
+media:
+  persistence:
+    size: 10Gi
+    # storageClass: ""          # empty = the cluster default. ReadWriteOnce is fine for one CMS replica.
+
+# A managed database has its own backups, but NOTHING else copies the media volume: turn this on (an encrypted off-site copy; needs a Secret with
+# BACKUP_RCLONE_REMOTE, RCLONE_CONFIG_* and BACKUP_ENCRYPTION_PASSPHRASE) or snapshot the volume.
+backups:
+  enabled: false
+  # existingSecret: polysite-backup
+
+# Only if you need them: resources, nodeSelector, networkPolicy.enabled, edge.trustedProxies (your ingress controller's pod range)...

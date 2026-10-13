@@ -1,0 +1,101 @@
+{{- if .Values.migrations.job.enabled }}
+{{- $labels := dict "ctx" . "component" "migrate" }}
+{{- $img := include "polysite.image" (dict "ctx" . "img" .Values.image.cms) }}
+{{- $hook := ternary "post-install,pre-upgrade" "pre-install,pre-upgrade" .Values.postgresql.enabled }}
+# Applies the core's and the plugins' migrations (`payload migrate`) from the NEW image before the new pods start, as a Helm hook.
+# The old pods keep serving while it runs; the migrations are additive, so they keep working on the new schema.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "polysite.fullname" . }}-migrate
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "0"
+    # A failed Job is kept so its log can be read; the next run replaces it.
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.job.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "polysite.selectorLabels" $labels | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- include "polysite.imagePullSecrets" . | nindent 6 }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.cms.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- if .Values.migrations.waitForDatabase }}
+        - name: wait-for-database
+          image: {{ .Values.image.postgres | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "until pg_isready -q -d \"$DATABASE_URL\"; do echo waiting for the database; sleep 3; done"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "polysite.migrateSecretName" . }}
+                  key: DATABASE_URL
+          securityContext:
+            {{- toYaml .Values.cms.securityContext | nindent 12 }}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+        {{- end }}
+        {{- if .Values.migrations.guard }}
+        - name: migration-guard
+          image: {{ $img | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              {{- .Files.Get "files/guard.sh" | nindent 14 }}
+          env:
+            - name: HOME
+              value: /tmp
+            - name: POLYSITE_ALLOW_DESTRUCTIVE
+              value: {{ .Values.migrations.allowDestructive | quote }}
+          securityContext:
+            {{- toYaml .Values.cms.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            {{- toYaml .Values.migrations.job.resources | nindent 12 }}
+        {{- end }}
+      containers:
+        - name: migrate
+          image: {{ $img | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "cd /repo/apps/cms && npx payload migrate"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "polysite.fullname" . }}-migrate
+            - secretRef:
+                name: {{ include "polysite.migrateSecretName" . }}
+          env:
+            - name: HOME
+              value: /tmp
+          securityContext:
+            {{- toYaml .Values.cms.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: next-cache, mountPath: /repo/apps/cms/.next/cache}
+          resources:
+            {{- toYaml .Values.migrations.job.resources | nindent 12 }}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        - {name: next-cache, emptyDir: {}}
+      {{- with .Values.cms.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cms.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

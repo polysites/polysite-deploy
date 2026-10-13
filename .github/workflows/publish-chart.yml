@@ -1,0 +1,49 @@
+name: Publish the Helm chart
+
+# The chart is a package of its own: oci://ghcr.io/<owner>/charts/polysite, versioned like the images (chart version = app version =
+# the Polysite release). Tag this repository vX.Y.Z only after Polysite vX.Y.Z has been released and its images passed the smoke test,
+# so a chart never points at images that were not tested. A manual run only lints.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      HELM_IMAGE: alpine/helm:3.17.3
+      GHCR_ACTOR: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER: ${{ github.repository_owner }}
+      REF_NAME: ${{ github.ref_name }}
+      IS_TAG: ${{ github.ref_type == 'tag' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Lint the chart and its example values (no cluster needed)
+        run: sh kubernetes/test/lint.sh
+      - name: Work out the version
+        id: v
+        if: env.IS_TAG == 'true'
+        run: |
+          v="${REF_NAME#v}"
+          printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "::error::The tag must look like v0.1.0"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Package and push the chart
+        if: env.IS_TAG == 'true'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          OWNER_LC=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          docker run --rm -e VERSION -e OWNER_LC -e GHCR_ACTOR -e GHCR_TOKEN -v "$PWD/kubernetes/helm:/charts:ro" --entrypoint sh "$HELM_IMAGE" -c '
+            set -eu
+            printf %s "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+            helm package /charts/polysite --version "$VERSION" --app-version "$VERSION" --destination /tmp
+            helm push "/tmp/polysite-$VERSION.tgz" "oci://ghcr.io/$OWNER_LC/charts"
+          '

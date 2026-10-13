@@ -1,0 +1,20 @@
+# For a reverse proxy that runs on the host itself (nginx or Apache installed with the system's package manager, or any other):
+# publishes the two apps on the loopback interface only, so the host's proxy can reach them at 127.0.0.1 and nobody else can.
+# Caddy is moved behind a profile so it does not start.
+#
+#   docker compose --env-file .env --env-file .deploy/current.env \
+#     -f docker-compose.prod.yml -f proxy/docker-compose.hostproxy.yml up -d
+#
+# In polysite.conf (nginx) or the Define lines (Apache) use 127.0.0.1:3001 for the CMS and 127.0.0.1:3000 for the web app.
+# Never publish these on 0.0.0.0: the sign-in limits trust the address the proxy appends to X-Forwarded-For (Known Issue #67).
+# POLYSITE_CMS_PORT and POLYSITE_WEB_PORT change the host ports. Needs Docker Compose 2.24 or newer.
+
+services:
+  caddy:
+    profiles: !override ["caddy"]
+  cms:
+    ports:
+      - "127.0.0.1:${POLYSITE_CMS_PORT:-3001}:3001"
+  web:
+    ports:
+      - "127.0.0.1:${POLYSITE_WEB_PORT:-3000}:3000"

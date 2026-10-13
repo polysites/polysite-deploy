@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "polysite.fullname" . }}
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "stack") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{- include "polysite.configData" . | nindent 2 }}
+{{- if .Values.migrations.job.enabled }}
+---
+# The migration Job runs before this release's own resources exist (and with the NEW values), so it reads its own copy.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "polysite.fullname" . }}-migrate
+  labels:
+    {{- include "polysite.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ ternary "post-install,pre-upgrade" "pre-install,pre-upgrade" .Values.postgresql.enabled }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  {{- include "polysite.configData" . | nindent 2 }}
+{{- end }}

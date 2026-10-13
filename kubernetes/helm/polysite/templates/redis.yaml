@@ -1,0 +1,83 @@
+{{- if .Values.redis.enabled }}
+{{- $name := printf "%s-redis" (include "polysite.fullname" .) }}
+{{- $labels := dict "ctx" . "component" "redis" }}
+# Provisioned like the Compose stack does (AOF on), but nothing in Polysite reads or writes Redis yet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polysite.selectorLabels" $labels | nindent 8 }}
+    spec:
+      {{- include "polysite.imagePullSecrets" . | nindent 6 }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: redis
+          image: {{ .Values.image.redis | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+          ports:
+            - {name: redis, containerPort: 6379}
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          {{- if .Values.redis.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  ports:
+    - {name: redis, port: 6379, targetPort: redis}
+  selector:
+    {{- include "polysite.selectorLabels" $labels | nindent 4 }}
+{{- if .Values.redis.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.redis.persistence.storageClass }}
+  storageClassName: {{ .Values.redis.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size }}
+{{- end }}
+{{- end }}

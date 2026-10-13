@@ -1,0 +1,38 @@
+[Unit]
+Description=Polysite CMS (Payload admin and API)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polysite
+Group=polysite
+WorkingDirectory=/opt/polysite/src/apps/cms
+EnvironmentFile=/etc/polysite/polysite.env
+Environment=NODE_ENV=production
+Environment=HOME=/var/lib/polysite
+# Applies the core's and the plugins' migrations (they are additive), then starts the server on loopback only: the reverse proxy is the only way in.
+ExecStartPre=/usr/bin/npx payload migrate
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start --port 3001 --hostname 127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+# Hardening: no new privileges, a read-only system, only the upload folder and Next's cache are writable.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+ReadWritePaths=/opt/polysite/src/apps/cms/media /opt/polysite/src/apps/cms/.next /var/lib/polysite
+
+[Install]
+WantedBy=multi-user.target

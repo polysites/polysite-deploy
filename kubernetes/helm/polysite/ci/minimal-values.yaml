@@ -1,0 +1,7 @@
+# Used by kubernetes/test/lint.sh: the smallest valid install (external database through a Secret you made).
+image: {tag: v0.1.0}
+domains:
+  sites: [www.example.org]
+  admin: admin.example.org
+secrets: {existingSecret: polysite-secrets}
+ingress: {className: nginx, tls: {clusterIssuer: letsencrypt-prod}}

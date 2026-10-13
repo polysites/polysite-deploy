@@ -1,0 +1,214 @@
+{{- if .Values.edge.enabled }}
+{{- $name := printf "%s-edge" (include "polysite.fullname" .) }}
+{{- $labels := dict "ctx" . "component" "edge" }}
+{{- $cms := printf "%s:%v" (include "polysite.cmsHost" .) .Values.cms.service.port }}
+{{- $web := printf "%s:%v" (include "polysite.webHost" .) .Values.web.service.port }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+data:
+  # The same routing, limits and headers as the Caddyfile and proxy/nginx/polysite.conf, with the cluster's service names, the
+  # visitor's address taken from the ingress controller (real_ip) and the scheme taken from the controller's X-Forwarded-Proto.
+  polysite.conf: |
+    upstream polysite_cms { server {{ $cms }}; keepalive 16; }
+    upstream polysite_web { server {{ $web }}; keepalive 16; }
+
+    server_tokens off;
+    {{- range .Values.edge.trustedProxies }}
+    set_real_ip_from {{ . }};
+    {{- end }}
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+
+    map $http_x_forwarded_proto $polysite_proto {
+        default $http_x_forwarded_proto;
+        ""      $scheme;
+    }
+
+    # Probes, and anything that is not one of our domains.
+    server {
+        listen 8080 default_server;
+        server_name _;
+        location = /healthz { access_log off; return 200 "ok\n"; }
+        location / { return 444; }
+    }
+
+    # The public sites.
+    server {
+        listen 8080;
+        server_name {{ join " " .Values.domains.sites }};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $polysite_proto;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        location /api/media/file/ {
+            client_max_body_size 100000000;
+            proxy_hide_header Cache-Control;
+            add_header Cache-Control "public, max-age=86400" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+            proxy_pass http://polysite_cms;
+        }
+        location /api/form-intake/ {
+            client_max_body_size 64k;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+            proxy_pass http://polysite_cms;
+        }
+        location /api/ {
+            client_max_body_size 100000000;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+            proxy_pass http://polysite_cms;
+        }
+        location / {
+            proxy_pass http://polysite_web;
+        }
+    }
+
+    # The admin and the API.
+    server {
+        listen 8080;
+        server_name {{ .Values.domains.admin }};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $polysite_proto;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        client_max_body_size 100000000;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        location = / { return 302 /admin; }
+        location / { proxy_pass http://polysite_cms; }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  {{- if not .Values.edge.autoscaling.enabled }}
+  replicas: {{ .Values.edge.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polysite.selectorLabels" $labels | nindent 8 }}
+      annotations:
+        checksum/config: {{ printf "%s%s%v%v" (toJson .Values.edge.trustedProxies) (toJson .Values.domains) .Values.cms.service.port .Values.web.service.port | sha256sum }}
+        {{- with .Values.edge.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "polysite.imagePullSecrets" . | nindent 6 }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.edge.podSecurityContext | nindent 8 }}
+      containers:
+        - name: nginx
+          image: {{ .Values.image.edge | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.edge.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.edge.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: polysite.conf, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: conf
+          configMap:
+            name: {{ $name }}
+        - {name: tmp, emptyDir: {}}
+      {{- with .Values.edge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+  {{- with .Values.edge.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.edge.service.type }}
+  ports:
+    - {name: http, port: {{ .Values.edge.service.port }}, targetPort: http}
+  selector:
+    {{- include "polysite.selectorLabels" $labels | nindent 4 }}
+{{- if .Values.edge.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.edge.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "polysite.selectorLabels" $labels | nindent 6 }}
+{{- end }}
+{{- if .Values.edge.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "polysite.labels" $labels | nindent 4 }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ $name }}}
+  minReplicas: {{ .Values.edge.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.edge.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ .Values.edge.autoscaling.targetCPUUtilizationPercentage }}}
+{{- end }}
+{{- end }}

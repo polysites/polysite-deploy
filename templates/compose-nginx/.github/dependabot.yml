@@ -1,0 +1,10 @@
+# Opens a pull request when a newer Polysite (or proxy, database) image exists. The image tags in docker-compose.yml are literal on purpose,
+# so this works. If you point POLYSITE_REGISTRY at a mirror that Dependabot cannot read, use renovate.json instead (it matches the tags by pattern).
+version: 2
+updates:
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: monthly}
